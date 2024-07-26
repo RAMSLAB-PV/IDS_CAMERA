@@ -1,76 +1,105 @@
-CameraManager
-Overview
-CameraManager is a Python class that manages a camera using the IDS Peak library. It allows you to configure and control the camera's settings such as Region of Interest (ROI), frame rate (FPS), gain, and exposure time. The program also supports saving and loading camera settings from JSON files and provides a simple command-line interface for manual configuration.
+# IDS Camera Manager
 
-Dependencies
-ids_peak library (IDS Peak SDK)
-opencv-python (cv2 for image processing and display)
-json (for saving and loading settings)
-os (for file operations)
-threading (for concurrent image acquisition)
-Installation
-Ensure you have the IDS Peak SDK installed on your system.
+`Ids_Camera_Manager.py` is a Python script that manages cameras using the IDS Peak library. It provides methods to configure and control IDS cameras.
 
-Install the required Python packages:
+## Features
 
-bash
-Copia codice
-pip install opencv-python
-Usage
-Basic Usage
-Run the script. The program will start and prompt you to configure the camera settings.
+- Initialize and open IDS cameras by serial number.
+- Manage camera settings and configurations.
+- Capture images and stream video from the camera.
 
-bash
-Copia codice
-python camera_manager.py
-Follow the on-screen prompts to adjust settings such as ROI, FPS, gain, and exposure.
+## Requirements
 
-Press 'q' to exit the live feed and save the current images.
+- Python 3.x
+- IDS Peak Library
+- OpenCV
+- JSON
+- Threading
+- Os
+- Sys
 
-Manual Configuration
-To manually configure the camera settings:
+## Installation
 
-Choose "Start Camera with Manual Settings" option in the prompt.
-Follow the interactive prompts to adjust settings.
-You can save the settings for future use.
-Auto Configuration
-To start the camera with default auto settings:
+1. **Install the required Python packages:**
+    ```sh
+    pip install -r requirements.txt
+    ```
 
-Choose "Start Camera with Auto Settings" option in the prompt.
-Load Settings from File
-To load settings from a JSON file:
+2. **Install the IDS Peak SDK:**
+    Install [IDS peak 2.11.0 extended](https://en.ids-imaging.com/download-details/1008066.html)  
 
-Ensure the settings file (e.g., <camera_serial_number>.json) is in the camera_settings folder.
-Choose "Start Camera and Load Settings from File" option in the prompt.
-Stop the Camera
-The camera acquisition process will stop when you exit the program or press 'q'. The camera will be properly closed, and any resources will be released.
+## Usage
 
-Code Overview
-CameraManager Class
-__init__(self, camera_id=None): Initializes the camera manager with optional camera ID.
-open_camera(self): Opens the camera specified by ID or the first available camera.
-prepare_acquisition(self): Prepares the camera for image acquisition.
-set_roi(self, x=0, y=0, width=None, height=None): Sets the Region of Interest (ROI).
-set_fps(self, fps=None): Sets the frames per second (FPS).
-set_Gain(self, GainMode="Continuous", Gain=None): Sets the gain for the camera.
-set_Exposure(self, ExposureMode="Continuous", ExposureTime=None): Sets the exposure time.
-alloc_and_announce_buffers(self): Allocates and announces buffers for image acquisition.
-start_acquisition(self): Starts the image acquisition process.
-runtime_frame(self): Continuously acquires and processes frames from the camera.
-manual_settings(self): Allows manual configuration of camera settings.
-save_settings(self): Saves current settings to a JSON file.
-startcamera_manual(self): Starts the camera with manual settings.
-startcamera_load(self): Starts the camera with settings loaded from a JSON file.
-startcamera_auto(self): Starts the camera with automatic settings.
-stopcamera(self): Stops the camera acquisition process and closes the camera.
-get_image(self): Returns the current image acquired from the camera.
-_SN(self): Returns the serial number of the camera.
-Example
-An example of how to use the CameraManager class is provided in the script's __main__ section. It demonstrates creating a CameraManager instance, starting it with manual settings, and displaying the camera feed in a window.
+1. **Initialize the Camera Manager:**
+   A. **Any Connected Cameras - Single**
+     ```python
+    from Ids_Camera_Manager import CameraManager
 
-Notes
-Ensure that the camera is properly connected and recognized by the IDS Peak SDK.
-Adjust the code according to your specific camera model and requirements.
-For additional help and configuration options, refer to the IDS Peak SDK documentation.
-License
-This project is licensed under the MIT License. See the LICENSE file for details.
+    cam_manager = CameraManager()
+    ret = cam_manager.startcamera_auto()    #OTHER OPTIONS .startcamera_manual() .startcamera_load()
+    if ret:
+        print("status camera ok")
+    else:
+        print("No camera connected")
+    ```
+     If more than one is connected, the first one found will be selected.
+   
+   B. **Specificied "S/N" Cameras - Single**
+     ```python
+    from Ids_Camera_Manager import CameraManager
+
+    sn = ["S/N"]
+    cam_manager = CameraManager(sn)
+    ret = cam_manager.startcamera_auto()    #OTHER OPTIONS .startcamera_manual() .startcamera_load()
+    if ret:
+        print("status camera ok")
+    else:
+        print("No camera connected")
+    ```
+     
+    C. **Any Connected Cameras - Multi**
+     ```python
+    from Ids_Camera_Manager import CameraManager
+    cameras_manager = []
+    while True:
+        cam_manager = CameraManager()
+        ret = cam_manager.startcamera_auto()    #OTHER OPTIONS .startcamera_manual() .startcamera_load()
+        if ret:
+            camera_managers.append(cam_manager)
+        else:
+            break
+    ```
+   D. **Specificied "S/N" Cameras - Multi**
+    ```python
+    from Ids_Camera_Manager import CameraManager
+    SNS = ["S/N1", "S/N2", ...]
+    
+    for sn in SNS
+        cam_manager = CameraManager(sn)
+        ret = cam_manager.startcamera_auto()    #OTHER OPTIONS .startcamera_manual() .startcamera_load()
+        if ret:
+            camera_managers.append(cam_manager)
+        else:
+            break
+    ```
+
+2. **Capture an image:**
+    ```python
+    image = camera_manager.get_image()
+    
+    ```
+
+## Methods
+
+- `__init__(self, camera_id=None)`: Initializes the `CameraManager` class.
+- `open_camera(self)`: Opens the camera with the specified ID.
+- `get_image(self)`: capture the image of the related camera_manager.
+- Additional methods to manage camera settings and configurations.
+
+## Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request with your changes.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
