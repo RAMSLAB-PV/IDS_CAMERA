@@ -1,4 +1,4 @@
 opencv-python
 ids_peak
-json
-threading
+simplejson
+threaded

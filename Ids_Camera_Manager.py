@@ -5,6 +5,7 @@ import threading
 import cv2
 import json
 import os
+import time
 
 class CameraManager:
     """
@@ -622,7 +623,7 @@ class CameraManager:
         
         if not self.start_acquisition():
             sys.exit(-8)
-
+        time.sleep(0.01)
         return True
     
     def stopcamera(self):
