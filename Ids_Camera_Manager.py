@@ -5,7 +5,6 @@ import threading
 import cv2
 import json
 import os
-import time
 
 class CameraManager:
     """
@@ -276,9 +275,6 @@ class CameraManager:
 
                 if ExposureTime > max_exposure and ExposureTime < min_exposure:
                     return False
-
-                if self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Value() < 1e3/ExposureTime:
-                    self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").SetValue(1e3/ExposureTime)
 
                 self.m_node_map_remote_device.FindNode("ExposureTime").SetValue(1e3*ExposureTime)
                 print("Exposure of " + self.m_device.SerialNumber() +" set to: " + str(ExposureTime))
@@ -623,7 +619,7 @@ class CameraManager:
         
         if not self.start_acquisition():
             sys.exit(-8)
-        time.sleep(0.01)
+
         return True
     
     def stopcamera(self):
