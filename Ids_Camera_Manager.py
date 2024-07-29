@@ -1,10 +1,12 @@
+import os
 import sys
-from ids_peak import ids_peak_ipl_extension as ipl
-from ids_peak import ids_peak as peak
-import threading
 import cv2
 import json
-import os
+import time
+import numpy as np
+import threading
+from ids_peak import ids_peak_ipl_extension as ipl
+from ids_peak import ids_peak as peak
 
 class CameraManager:
     """
@@ -12,12 +14,15 @@ class CameraManager:
     It provides various methods to configure and control the camera.
     """
 
+
     def __init__(self, camera_id=None):
         """
         Initializes the CameraManager class.
 
         :param camera_id: Serial number of the camera to be managed. If None, the first available camera will be used.
         """
+        self.setting_path = "camera_settings"
+
         self.Msetting = False
         self.m_device = None
         self.m_dataStream = None
@@ -26,9 +31,10 @@ class CameraManager:
         self.acquisition_thread = None
         self.running = False
         self.bgr = None
+        self.jpg = None
         self.ID = camera_id
         self.print = False
-        self.folder_path = "camera_settings"
+        
 
     def open_camera(self):
         """
@@ -352,12 +358,14 @@ class CameraManager:
                     cv2.destroyAllWindows()
                     flag = False
                     
-        return
+        return True
     
     def manual_settings(self):
         """
         Allows the user to manually configure the camera settings through a series of prompts.
         """
+
+        self.m_node_map_remote_device.FindNode("TLParamsLocked").SetValue(0)
         while True:
             self.print = True
             print("Choose a setting to change:")
@@ -443,6 +451,7 @@ class CameraManager:
                         print("Invalid setting")
             elif setting == "2":
                 while True:
+                    print("Current FPS: " + str(self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Value()))
                     print("FPS: ")
                     value = input()
                     if value:
@@ -459,6 +468,7 @@ class CameraManager:
                     
             elif setting == "3":
                 while True:
+                    print("Current Gain: " + str(self.m_node_map_remote_device.FindNode("Gain").Value()))
                     print("set Gain between: " + str(self.m_node_map_remote_device.FindNode("Gain").Minimum()) + " and " + str(self.m_node_map_remote_device.FindNode("Gain").Maximum())+ ": ")
                     value = input()
                     if value:
@@ -475,6 +485,7 @@ class CameraManager:
                     
             elif setting == "4":
                 while True:
+                    print("Current Exposure: " + str(self.m_node_map_remote_device.FindNode("ExposureTime").Value()/1e3))
                     print("set Exposure between: " + str(self.m_node_map_remote_device.FindNode("ExposureTime").Minimum()/1e3) + " ms and " + str(self.m_node_map_remote_device.FindNode("ExposureTime").Maximum()/1e3) + " ms: ")
                     value = input()
                     if value:
@@ -511,8 +522,7 @@ class CameraManager:
                 pass
 
         return True
-
-
+    
     def save_settings(self):
         """
         Saves the current camera settings to a JSON file.
@@ -531,17 +541,17 @@ class CameraManager:
             "Exposure": self.m_node_map_remote_device.FindNode("ExposureTime").Value()/1e3
         }
 
-        if not os.path.exists(self.folder_path):
-            os.makedirs(self.folder_path)
+        if not os.path.exists(self.setting_path):
+            os.makedirs(self.setting_path)
 
         file_name = f"{self.ID}.json"
-        file_path = os.path.join(self.folder_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
 
         with open(file_path, 'w') as json_file:
             json.dump(settings, json_file, indent=4)
 
         return True
-    
+
     def startcamera_manual(self):
         """
         Starts the camera and allows the user to manually configure the settings.
@@ -551,33 +561,38 @@ class CameraManager:
         self.Msetting = True
         if not self.startcamera_auto():
             return False
+        
+        if os.path.exists(os.path.join(self.setting_path, f"{self.ID}.json")):
+            if not self.startcamera_load(from_manual = True):
+                return False
         self.manual_settings()
         return True
     
-    def startcamera_load(self):
+    def startcamera_load(self, from_manual = False):
         """
         Starts the camera and loads the settings from a JSON file.
 
         :return: True if the camera is successfully started and configured, False otherwise.
         """
-        self.Msetting = True
-        if not self.startcamera_auto():
-            return False
+        if not from_manual:
+            self.Msetting = True
+            if not self.startcamera_auto():
+                return False
 
         file_name = f"{self.ID}.json"
-        file_path = os.path.join(self.folder_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
         
         if not os.path.exists(file_path):
-            print(f"Settings file {file_name} not found in {self.folder_path}")
+            print(f"Settings file {file_name} not found in {self.setting_path}")
             return False
 
         with open(file_path, 'r') as json_file:
             settings = json.load(json_file)
 
-        self.set_offset_x(settings["ROI"]["OffsetX"])
-        self.set_offset_y(settings["ROI"]["OffsetY"])
         self.set_width(settings["ROI"]["Width"])
         self.set_height(settings["ROI"]["Height"])
+        self.set_offset_x(settings["ROI"]["OffsetX"])
+        self.set_offset_y(settings["ROI"]["OffsetY"])
         self.set_fps(settings["FPS"])
         self.set_Gain(GainMode="Off", Gain=settings["Gain"])
         self.set_Exposure(ExposureMode="Off", ExposureTime=settings["Exposure"])
@@ -630,16 +645,19 @@ class CameraManager:
         Stops the camera acquisition process and closes the camera.
         """
         self.running = False
+
+        if self.acquisition_thread and self.acquisition_thread.is_alive():
+            self.acquisition_thread.join()
+
         if self.m_node_map_remote_device:
             self.m_node_map_remote_device.FindNode("AcquisitionStop").Execute()
         if self.m_dataStream:
             self.m_dataStream.StopAcquisition(peak.AcquisitionStopMode_Default)
         
-        if self.acquisition_thread and self.acquisition_thread.is_alive():
-            self.acquisition_thread.join()
-        
+        time.sleep(1)
         peak.Library.Close()
-    
+
+
     def get_image(self):
         """
         Returns the current image acquired from the camera.
@@ -655,6 +673,296 @@ class CameraManager:
         :return: The serial number of the camera.
         """
         return self.ID
+
+class CameraCalibration:
+    def __init__(self, camera):
+        self.camera = camera
+        self.parameters_path = "camera_parameters"
+        self.WR_path = "WorldReference"
+        self.cmtx = None
+        self.dist = None
+        if os.path.exists(os.path.join(self.parameters_path, f"{self.camera._SN()}.json")):
+            self.load_calibration()
+        self.patternSize = None
+        self.squareSize = None
+        self.rvec = None
+        self.tvec = None
+        self.P = None
+        if os.path.exists(os.path.join(self.WR_path, f"{self.camera._SN()}.json")):
+            self.load_wr()
+        
+    def mean_corner_difference(corners_new, corners, threshold=50):
+        if corners == []:
+            return True
+        for corners_old in corners:
+            if np.mean(np.linalg.norm(corners_new - corners_old, axis=2)) < threshold:
+                return False
+
+        return True
+
+    def cheessboard_pattern_size(self):
+        """
+        creates a chessboard from pattern size.
+
+        :param patternSize: The size of the chessboard pattern (rows, columns).
+        :param squareSize: The size of each square in the chessboard pattern.
+
+        :return: The chessboard points in RealWorld.
+
+        """
+
+        # Prepare chessboard points (0, 0, 0), (1, 0, 0), (2, 0, 0) ..., (2, 5, 0)
+        objp = np.zeros((self.patternSize[0] * self.patternSize[1], 3), np.float32)
+        objp[:, :2] = np.mgrid[0:self.patternSize[0], 0:self.patternSize[1]].T.reshape(-1, 2)
+        objp *= self.squareSize
+
+        return objp
+    
+    def calibrate(self, patternSize, squareSize):
+        """
+        Calibrates the camera using a chessboard pattern.
+
+        :param patternSize: The size of the chessboard pattern (rows, columns).
+        :param squareSize: The size of each square in the chessboard pattern.
+
+        :return: True if the camera is successfully calibrated, False otherwise.
+        """
+
+        self.patternSize = patternSize
+        self.squareSize = squareSize
+
+
+        chessboard_World = self.cheessboard_pattern_size()
+
+        term_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+        # Arrays to store object points and image points from all the images.
+        objpoints = []  # 3d point in real world space
+        imgpoints = []  # 2d points in image plane.
+
+        #Valid image counter
+        valid_images_count = 0
+        required_images = 50  # required image for calibration
+
+
+        while valid_images_count < required_images:
+            img = self.camera.get_image()
+            ret, corners = cv2.findChessboardCorners(img, patternSize, None)
+            if ret and self.mean_corner_difference(corners, imgpoints):
+                objpoints.append(chessboard_World)
+                corners_refined = cv2.cornerSubPix(img, corners, (11, 11), (-1, -1), term_criteria)
+                imgpoints.append(corners_refined)
+
+                cv2.drawChessboardCorners(img, patternSize, corners_refined, ret)
+
+                valid_images_count += 1
+
+            cv2.putText(img, f"Valid Images: {valid_images_count}/{required_images}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.imshow(self.camera._SN(), cv2.resize(img, (img.shape[1]//2, img.shape[0]//2)))
+            cv2.waitKey(1)
+
+        cv2.destroyAllWindows()
+
+        rpj_error, self.cmtx, self.dist, _ , _ = cv2.calibrateCamera(objpoints, imgpoints, img.shape[::-1], None, None)
+
+        if rpj_error < 0.3:
+            self.save_calibration()
+            return True
+        else:
+            print("Calibration failed. Reprojection error is too high.")
+            return False
+        
+    def save_calibration(self):
+        """
+        Saves the camera calibration parameters to a JSON file.
+
+        :param cmtx: The camera matrix.
+        :param dist: The distortion coefficients.
+
+        :return: True if the calibration parameters are successfully saved, False otherwise.
+        """
+        parameters = {
+            "CameraMatrix": self.cmtx.tolist(),
+            "DistortionCoefficients": self.dist.tolist()
+        }
+
+        if not os.path.exists(self.parameters_path):
+            os.makedirs(self.parameters_path)
+
+        file_name = f"{self.camera._SN()}.json"
+        file_path = os.path.join(self.parameters_path, file_name)
+
+        with open(file_path, 'w') as json_file:
+            json.dump(parameters, json_file, indent=4)
+
+        return True
+    
+    def load_calibration(self):
+        """
+        Loads the camera calibration parameters from a JSON file.
+
+        :return: True if the calibration parameters are successfully loaded, False otherwise.
+        """
+        file_name = f"{self.camera._SN()}.json"
+        file_path = os.path.join(self.parameters_path, file_name)
+
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            return False
+
+        with open(file_path, 'r') as json_file:
+            parameters = json.load(json_file)
+
+        try:
+            # Convert lists to numpy arrays
+            self.cmtx = np.array(parameters["CameraMatrix"])
+            self.dist = np.array(parameters["DistortionCoefficients"])
+        except KeyError as e:
+            print(f"Missing key in JSON file: {e}")
+            return False
+        except ValueError as e:
+            print(f"Error converting parameters: {e}")
+            return False
+
+        return True
+    
+    def ReferenceFrame_acquisition(self, patternSize, squareSize):
+        
+        self.patternSize = patternSize
+        self.squareSize = squareSize
+
+        last_good = None
+
+        while True:
+            img = self.camera.get_image()
+            ret, corners = cv2.findChessboardCorners(img, patternSize, None)
+            if ret:
+                last_good = img.copy()
+                cv2.drawChessboardCorners(img, patternSize, corners, ret)
+
+                valid_images_count += 1
+
+            cv2.imshow(self.ID, cv2.resize(img, (img.shape[1]//2, img.shape[0]//2)))
+            key = cv2.waitKey(1)
+            if key == 32:
+                break
+
+        cv2.destroyAllWindows()
+
+        cv2.imwrite(os.path.join(self.WR_path, f"{self.camera._SN()}.png"), last_good)
+
+        return last_good
+        
+    def get_camera_position(self, wr, patternSize, squareSize):
+        
+        self.patternSize = patternSize
+        self.squareSize = squareSize
+
+        #schacchiera mondo reale
+    
+        cRW = self.cheessboard_pattern_size() * [1,-1, 1]
+        cRW += [self.squareSize, 2*self.squareSize, 0]
+            
+        # Trova gli angoli della scacchiera
+        print('Detecting World Reference')
+        ret, corners = cv2.findChessboardCorners(wr, self.patternSize, None)
+
+        if ret:
+            # Risolvi il problema PnP per ottenere la posa della fotocamera
+            _, self.rvec, self.tvec = cv2.solvePnP(
+                cRW,
+                corners,
+                self.cmtx,
+                self.dist, 
+                False, 
+                cv2.SOLVEPNP_IPPE_SQUARE
+            )
+            
+            print("Rotation Vector (rvec):")
+            print(self.rvec)
+            print("\nTranslation Vector (tvec):")
+            print(self.tvec)
+            points_3d = points_3d = np.array([[0, 0, 0],  # Punto 1
+                                                [1000, 0, 0],  # Punto 2
+                                                [0, 1000, 0],  # Punto 3
+                                                [0, 0, 1000]], dtype=np.float32) # Punto 4
+            points_2d, _ = cv2.projectPoints(points_3d, self.rvec, self.tvec, self.cmtx, self.dist)
+
+            #img = cv2.drawChessboardCorners(img, pattern_size, corners, ret)
+            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[1][0], dtype =int), [255,0,0], 3)
+            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[2][0], dtype =int), [0,255,0], 3)
+            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[3][0], dtype =int), [0,0,255], 3)
+
+            cv2.imshow('Chessboard Corners', cv2.resize(img,(540,960)))
+            cv2.waitKey(2000)  # Display each image for a short time
+            rotM = cv2.Rodrigues(self.rvec)[0]
+            rotM = np.matrix(rotM).T
+            
+            cameraMATRIX = [0,0,0]
+            cameraPosition = rotM*cameraMATRIX.T-rotM*self.tvec
+            cameraPosition = cameraPosition.T
+            
+            cv2.destroyAllWindows()
+            
+            self.P = np.dot(self.cmtx, np.hstack((cv2.Rodrigues(self.rvec)[0], self.tvec)))
+
+            self.save_wr()
+
+
+            return cameraPosition
+        else:
+            print("Angoli della scacchiera non trovati.")
+            return None, None, None
+    def save_wr(self):
+        """
+        Saves the World Reference to a JSON file.
+
+        :return: True if the World Reference is successfully saved, False otherwise.
+        """
+        parameters = {
+            "rvec": self.rvec.tolist(),
+            "tvec": self.tvec.tolist(),
+            "P": self.P.tolist()
+        }
+
+        if not os.path.exists(self.WR_path):
+            os.makedirs(self.WR_path)
+
+        file_name = f"{self.camera._SN()}.json"
+        file_path = os.path.join(self.WR_path, file_name)
+
+        with open(file_path, 'w') as json_file:
+            json.dump(parameters, json_file, indent=4)
+    
+    def load_wr(self):
+        """
+        Loads the World Reference from a JSON file.
+
+        :return: True if the World Reference is successfully loaded, False otherwise.
+        """
+        file_name = f"{self.camera._SN()}.json"
+        file_path = os.path.join(self.WR_path, file_name)
+
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            return False
+
+        with open(file_path, 'r') as json_file:
+            parameters = json.load(json_file)
+
+        try:
+            # Convert lists to numpy arrays
+            self.rvec = np.array(parameters["rvec"])
+            self.tvec = np.array(parameters["tvec"])
+            self.P = np.array(parameters["P"])
+        except KeyError as e:
+            print(f"Missing key in JSON file: {e}")
+            return False
+        except ValueError as e:
+            print(f"Error converting parameters: {e}")
+            return False
+
+        return True
 
 
 #EXAMPLE OF USE
