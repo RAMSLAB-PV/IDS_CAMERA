@@ -1,0 +1,4 @@
+opencv-python
+ids_peak
+simplejson
+threaded
