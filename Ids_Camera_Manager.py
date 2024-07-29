@@ -893,7 +893,7 @@ class CameraCalibration:
             wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[2][0], dtype =int), [0,255,0], 3)
             wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[3][0], dtype =int), [0,0,255], 3)
 
-            cv2.imshow('Chessboard Corners', cv2.resize(img,(540,960)))
+            cv2.imshow('Chessboard Corners', cv2.resize(wr,(540,960)))
             cv2.waitKey(2000)  # Display each image for a short time
             rotM = cv2.Rodrigues(self.rvec)[0]
             rotM = np.matrix(rotM).T
