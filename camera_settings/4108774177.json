@@ -1,0 +1,11 @@
+{
+    "ROI": {
+        "OffsetX": 0,
+        "OffsetY": 0,
+        "Width": 1264,
+        "Height": 1264
+    },
+    "FPS": 30,
+    "Gain": 1.0,
+    "Exposure": 2
+}

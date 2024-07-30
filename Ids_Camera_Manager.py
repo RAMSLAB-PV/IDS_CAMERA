@@ -3,10 +3,12 @@ import sys
 import cv2
 import json
 import time
-import numpy as np
+import pyceres
 import threading
-from ids_peak import ids_peak_ipl_extension as ipl
+import numpy as np
+from tqdm import tqdm
 from ids_peak import ids_peak as peak
+from ids_peak import ids_peak_ipl_extension as ipl
 
 class CameraManager:
     """
@@ -35,7 +37,7 @@ class CameraManager:
         self.jpg = None
         self.ID = camera_id
         self.print = False
-        
+        self.camera_properties = CameraProperties(self)
 
     def open_camera(self):
         """
@@ -283,9 +285,6 @@ class CameraManager:
                 if ExposureTime > max_exposure and ExposureTime < min_exposure:
                     return False
 
-                if self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Value() < 1e3/ExposureTime:
-                    self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").SetValue(1e3/ExposureTime)
-
                 self.m_node_map_remote_device.FindNode("ExposureTime").SetValue(1e3*ExposureTime)
                 print("Exposure of " + self.m_device.SerialNumber() +" set to: " + str(ExposureTime))
             return True
@@ -331,7 +330,9 @@ class CameraManager:
                 self.m_node_map_remote_device.FindNode("TLParamsLocked").SetValue(1)
             self.m_node_map_remote_device.FindNode("AcquisitionStart").Execute()
             self.running = True
-            self.acquisition_thread = threading.Thread(target=self.runtime_frame, daemon=True).start()
+            self.acquisition_thread = threading.Thread(target=self.runtime_frame, daemon=False)
+            self.acquisition_thread.start()
+            time.sleep(2)
             return True
         except Exception as e:
             print(f"Error starting acquisition: {str(e)}")
@@ -581,7 +582,7 @@ class CameraManager:
         self.manual_settings()
         return True
     
-    def startcamera_load(self, from_manual = False):
+    def startcamera_load(self, from_manual = False, setting_path:str=None):
         """
         Starts the camera and loads the settings from a JSON file.
 
@@ -591,6 +592,9 @@ class CameraManager:
             self.Msetting = True
             if not self.startcamera_auto():
                 return False
+
+        if setting_path is not None:
+            self.setting_path = setting_path
 
         file_name = f"{self.ID}.json"
         file_path = os.path.join(self.setting_path, file_name)
@@ -703,9 +707,7 @@ class CameraProperties:
         if os.path.exists(os.path.join(self.setting_path, f"{self.camera._SN()}.json")):
             self.load_wr()
         
-    def mean_corner_difference(corners_new, corners, threshold=50):
-        if corners == []:
-            return True
+    def mean_corner_difference(self, corners_new, corners, threshold=50):
         for corners_old in corners:
             if np.mean(np.linalg.norm(corners_new - corners_old, axis=2)) < threshold:
                 return False
@@ -729,7 +731,7 @@ class CameraProperties:
         objp *= self.squareSize
 
         return objp
-    
+
     def calibrate(self, patternSize:tuple[int,int]=(3,6), squareSize=50.8):
         """
         Calibrates the camera using a chessboard pattern.
@@ -746,43 +748,119 @@ class CameraProperties:
 
         chessboard_World = self.cheessboard_pattern_size()
 
-        term_criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
         # Arrays to store object points and image points from all the images.
-        objpoints = []  # 3d point in real world space
         imgpoints = []  # 2d points in image plane.
 
         #Valid image counter
         valid_images_count = 0
-        required_images = 50  # required image for calibration
 
+        capturing = False
+        frames = []
+        tempo = 0
+        while True and tempo >= 0:
+            
+            img = self.camera.image
 
-        while valid_images_count < required_images:
-            img = self.camera.get_image()
-            ret, corners = cv2.findChessboardCorners(img, self.patternSize, None)
-            if ret and self.mean_corner_difference(corners, imgpoints):
-                objpoints.append(chessboard_World)
-                corners_refined = cv2.cornerSubPix(img, corners, (11, 11), (-1, -1), term_criteria)
-                imgpoints.append(corners_refined)
-
-                cv2.drawChessboardCorners(img, self.patternSize, corners_refined, ret)
-
-                valid_images_count += 1
-
-            cv2.putText(img, f"Valid Images: {valid_images_count}/{required_images}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if capturing:
+                tempo = tempo_end-time.time()
+                if tempo <= 30:
+                    frames.append(img.copy())
+                    print(f"Captured frame {len(frames)}")
+                    img = cv2.flip(img, 1)
+                    img = cv2.putText(img, f"Capturing for {tempo:.0f} seconds", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                else:
+                    img = cv2.flip(img, 1)
+                    img = cv2.putText(img, f"Capturing in {tempo-30:.0f} seconds", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            else:
+                img = cv2.flip(img, 1)
+                img = cv2.putText(img, "Press Space to start capturing", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
             cv2.imshow(self.camera._SN(), cv2.resize(img, (img.shape[1]//2, img.shape[0]//2)))
-            cv2.waitKey(1)
+            key = cv2.waitKey(1)
 
+            if key == 32:
+                tempo_end = time.time()+35
+                capturing = True
+        for frame in frames:
+            cv2.imshow(self.camera._SN(), cv2.resize(frame, (frame.shape[1]//2, frame.shape[0]//2)))
+            cv2.waitKey(1)
         cv2.destroyAllWindows()
 
-        rpj_error, self.cmtx, self.dist, _ , _ = cv2.calibrateCamera(objpoints, imgpoints, img.shape[::-1], None, None)
+        frames = np.array(frames)
 
-        if rpj_error < 0.3:
-            self.save_calibration()
-            return True
-        else:
-            print("Calibration failed. Reprojection error is too high.")
-            return False
+        for frame in tqdm(frames, desc="Elaborazione dei frame"):
+            ret, corners = cv2.findChessboardCorners(cv2.cvtColor(frame,cv2.COLOR_GRAY2BGR), self.patternSize, None)
+            if ret:
+                frame = cv2.drawChessboardCorners(frame, self.patternSize, corners, ret)
+                imgpoints.append(corners)
+                valid_images_count += 1
+            cv2.imshow(self.camera._SN(), cv2.resize(frame, (frame.shape[1]//2, frame.shape[0]//2)))
+            cv2.waitKey(1)
+
+        print(f"Founded {valid_images_count} valid images")
+
+        imgpoints = np.array(imgpoints).squeeze()
+        num_batches = valid_images_count//50
+        batches = []
+        objpoints = np.zeros((50,18,3))
+        objpoints[:] = chessboard_World
+        # Creare i batch
+        cmtxs = []
+        dists = []
+        for _ in tqdm(num_batches, desc="Calibration"):
+            # Selezionare 50 indici casuali lungo l'asse 0
+            indices = np.random.choice(imgpoints.shape[0], 50, replace=False)
+            # Creare il batch selezionando gli indici dal tuo array
+            batch = imgpoints[indices]
+            
+            rpj_error, cmtx_temp, dist_temp, _ , _ = cv2.calibrateCamera(objpoints, batch, img.shape[::-1], None, None)
+            cmtxs.append(cmtx_temp)
+            dists.append(dist_temp)
+        
+        # Calcolare la media delle matrici di calibrazione
+        self.cmtx = np.mean(cmtxs, axis=0)
+        self.dist = np.mean(dists, axis=0)
+
+        num_tests = 100
+
+        # Lista per memorizzare gli errori di riproiezione
+        reprojection_errors = []
+
+        for _ in range(num_tests):
+            # Selezionare un elemento randomico di `imgpoints` (18x2)
+            A = imgpoints[np.random.choice(imgpoints.shape[0])]
+
+            # Assumiamo che `chessboard_World` è già un array di dimensioni (18, 3)
+            B = chessboard_World
+
+            # Selezionare 9 indici casuali
+            selected_indices = np.random.choice(18, 9, replace=False)
+            remaining_indices = [i for i in range(18) if i not in selected_indices]
+
+            # Punti selezionati
+            A_selected = A[selected_indices]
+            B_selected = B[selected_indices]
+
+            # Punti rimanenti
+            A_remaining = A[remaining_indices]
+            B_remaining = B[remaining_indices]
+
+            # Calcolare `rvec` e `tvec` usando `cv2.solvePnP`
+            success, rvec, tvec = cv2.solvePnP(B_selected, A_selected, self.cmtx, self.dist)
+
+            if success:
+                # Proiettare i punti rimanenti usando `cv2.projectPoints`
+                projected_points, _ = cv2.projectPoints(B_remaining, rvec, tvec, self.cmtx, self.dist)
+
+                # Calcolare l'errore di riproiezione
+                error = cv2.norm(A_remaining, projected_points, cv2.NORM_L2) / len(A_remaining)
+                reprojection_errors.append(error)
+
+        # Calcolare la media degli errori di riproiezione
+        mean_reprojection_error = np.mean(reprojection_errors)
+        print(f"Mean reprojection error: {mean_reprojection_error}")
+        print(f"Camera matrix:\n{self.cmtx}")
         
     def save_calibration(self):
         """
@@ -818,12 +896,15 @@ class CameraProperties:
 
         return True
     
-    def load_calibration(self):
+    def load_calibration(self, folder_path:str=None):
         """
         Loads the camera calibration parameters from a JSON file.
-
+        "CameraMatrix" and "DistortionCoefficients" are expected keys in the JSON file.
         :return: True if the calibration parameters are successfully loaded, False otherwise.
         """
+        if folder_path is not None:
+            self.setting_path = folder_path
+
         file_name = f"{self.camera._SN()}.json"
         file_path = os.path.join(self.setting_path, file_name)
 
@@ -881,6 +962,9 @@ class CameraProperties:
         
     def get_camera_position(self, image_wr:str=None, patternSize:tuple[int,int]=(3,6), squareSize=50.8, offset_xyz:list[float]=None): 
         
+        if self.cmtx is None or self.dist is None:
+            if not self.load_calibration():
+                return False
 
         if self.patternSize is None or self.squareSize is None:
             self.patternSize = patternSize
@@ -950,8 +1034,6 @@ class CameraProperties:
             cameraPosition = rotM*cameraMATRIX.T-rotM*self.tvec
             cameraPosition = cameraPosition.T
             
-            cv2.destroyAllWindows()
-            
             self.P = np.dot(self.cmtx, np.hstack((cv2.Rodrigues(self.rvec)[0], self.tvec)))
 
             self.save_wr()
@@ -996,12 +1078,16 @@ class CameraProperties:
 
         return True
     
-    def load_wr(self):
+    def load_wr(self, folder_path:str=None):
         """
         Loads the World Reference from a JSON file.
 
         :return: True if the World Reference is successfully loaded, False otherwise.
         """
+
+        if folder_path is not None:
+            self.setting_path = folder_path
+
         file_name = f"{self.camera._SN()}.json"
         file_path = os.path.join(self.setting_path, file_name)
 
@@ -1025,10 +1111,157 @@ class CameraProperties:
             return False
 
         return True
+    
+    def get_K(self):
+        if self.cmtx is None:
+            if not self.load_calibration():
+                return False
+        return self.cmtx
+    def get_D(self):
+        if self.cmtx is None:
+            if not self.load_calibration():
+                return False
+        return self.dist
+    
+    def get_P(self):
+        if self.P is None:
+            if not self.load_wr():
+                return False
+        return self.P
+    def get_rvec(self):
+        if self.rvec is None:
+            if not self.load_wr():
+                return False
+        return self.rvec
+    def get_tvec(self):
+        if self.tvec is None:
+            if not self.load_wr():
+                return False
+        return self.tvec
+    
+    def get_wr(self):
+        return self.wr
+    
+    def stop_reference_acquisition(self):
+        self.show = False
+        return True
 
+cost = pyceres.CostFunction()
+cost.set_parameter_block_sizes
+
+
+class ReprojectionCostFunction(pyceres.CostFunction):
+    def __init__(self):
+        super().__init__()
+        self.set_num_residuals(18)
+        self.set_parameter_block_sizes([1, 1, 1, 1, 1, 1, (1,3), (1,3)])
+        #self.observed = np.array(observed)
+        #self.world_point = np.array(world_point)
+
+    def Evaluate(self, parameters, residuals, jacobians):
+        self.observed = np.array([[1027.9907 ,  794.9041 ],
+       [1027.2947 ,  703.91406],
+       [1026.497  ,  612.5368 ],
+       [1118.2146 ,  796.8792 ],
+       [1117.9833 ,  704.3839 ],
+       [1116.9982 ,  611.0883 ],
+       [1210.026  ,  798.0821 ],
+       [1210.4116 ,  704.53754],
+       [1209.9893 ,  610.0088 ],
+       [1303.1099 ,  798.3448 ],
+       [1304.1499 ,  704.11066],
+       [1303.1763 ,  608.7239 ],
+       [1396.6923 ,  798.1369 ],
+       [1397.5958 ,  703.3377 ],
+       [1396.9244 ,  607.9472 ],
+       [1489.0524 ,  797.2684 ],
+       [1490.789  ,  702.0262 ],
+       [1490.0833 ,  606.24005]])
+        
+        self.world_point = np.array([[  0. ,   0. ,   0. ],
+       [ 50.8,   0. ,   0. ],
+       [101.6,   0. ,   0. ],
+       [  0. ,  50.8,   0. ],
+       [ 50.8,  50.8,   0. ],
+       [101.6,  50.8,   0. ],
+       [  0. , 101.6,   0. ],
+       [ 50.8, 101.6,   0. ],
+       [101.6, 101.6,   0. ],
+       [  0. , 152.4,   0. ],
+       [ 50.8, 152.4,   0. ],
+       [101.6, 152.4,   0. ],
+       [  0. , 203.2,   0. ],
+       [ 50.8, 203.2,   0. ],
+       [101.6, 203.2,   0. ],
+       [  0. , 254. ,   0. ],
+       [ 50.8, 254. ,   0. ],
+       [101.6, 254. ,   0. ]])
+        
+        fx, fy, cx, cy, k1, k2, rvec, tvec = parameters
+        R, _ = cv2.Rodrigues(rvec)
+        
+        print(fx, fy, cx, cy, k1, k2, rvec, tvec)
+
+        # Compute projected 3D points
+        projected_points = np.dot(self.world_point, R.T) + tvec
+        X, Y, Z = projected_points[:, 0], projected_points[:, 1], projected_points[:, 2]
+
+        x = fx * (X / Z) + cx
+        y = fy * (Y / Z) + cy
+        
+        # Compute distortion
+        r2 = x**2 + y**2
+        x_distorted = x * (1 + k1 * r2 + k2 * r2**2)
+        y_distorted = y * (1 + k1 * r2 + k2 * r2**2)
+        
+        # Compute residuals
+        ox, oy = self.observed[:, 0], self.observed[:, 1]
+        residuals[:] = (ox - x_distorted)**2 + (oy - y_distorted)**2
+
+        if jacobians is not None:
+            jacobians[0].fill(0)  # Initialize Jacobians array
+            
+            # Compute Jacobians w.r.t. intrinsic parameters
+            jacobian_intrinsic = np.zeros((self.num_points, 6))
+            jacobian_intrinsic[:, 0] = -2 * (ox - x_distorted) * (X / Z)  # df/dfx
+            jacobian_intrinsic[:, 1] = -2 * (oy - y_distorted) * (Y / Z)  # df/dfy
+            jacobian_intrinsic[:, 2] = -2 * (ox - x_distorted) * (1 + k1 * r2 + k2 * r2**2)  # df/dcx
+            jacobian_intrinsic[:, 3] = -2 * (oy - y_distorted) * (1 + k1 * r2 + k2 * r2**2)  # df/dcy
+            jacobian_intrinsic[:, 4] = -2 * (ox - x_distorted) * (r2)  # df/dk1
+            jacobian_intrinsic[:, 5] = -2 * (oy - y_distorted) * (r2**2)  # df/dk2
+
+            # Jacobians w.r.t. rotation vector
+            jacobian_rvec = np.zeros((self.num_points, 3))
+            perturb = 1e-6
+            for j in range(3):
+                rvec_perturb = np.copy(rvec)
+                rvec_perturb[j] += perturb
+                R_perturb, _ = cv2.Rodrigues(rvec_perturb)
+                projected_points_perturb = np.dot(self.world_point, R_perturb.T) + tvec
+                X_perturb, Y_perturb, Z_perturb = projected_points_perturb[:, 0], projected_points_perturb[:, 1], projected_points_perturb[:, 2]
+                x_perturb = fx * (X_perturb / Z_perturb) + cx
+                y_perturb = fy * (Y_perturb / Z_perturb) + cy
+                r2_perturb = x_perturb**2 + y_perturb**2
+                x_distorted_perturb = x_perturb * (1 + k1 * r2_perturb + k2 * r2_perturb**2)
+                y_distorted_perturb = y_perturb * (1 + k1 * r2_perturb + k2 * r2_perturb**2)
+                jacobian_rvec[:, j] = (x_distorted_perturb - x_distorted) / perturb
+
+            # Jacobians w.r.t. translation vector
+            jacobian_tvec = np.zeros((self.num_points, 3))
+            jacobian_tvec[:, 0] = -2 * (ox - x_distorted) * (fx / Z)  # df/dtx
+            jacobian_tvec[:, 1] = -2 * (oy - y_distorted) * (fy / Z)  # df/dty
+            jacobian_tvec[:, 2] = 0  # df/dtz
+
+            # Fill in Jacobians
+            jacobians[0][:6] = np.mean(jacobian_intrinsic, axis=0)  # Average over all points
+            jacobians[0][6:9] = np.mean(jacobian_rvec, axis=0)  # Average over all points
+            jacobians[0][9:] = np.mean(jacobian_tvec, axis=0)  # Average over all points
+
+        return True
 
 #EXAMPLE OF USE
 if __name__ == '__main__':
+
 
     camera_managers = []
     '''ids = ["4108774181"]
@@ -1039,28 +1272,31 @@ if __name__ == '__main__':
             camera_managers.append(cam_manager)
         else:
             break'''
-
-    while True:
-        cam_manager = CameraManager()
-        ret = cam_manager.startcamera_manual()
-        if ret:
-            camera_managers.append(cam_manager)
-        else:
-            break
-
-    try:
-        while True:
-            for cam_manager in camera_managers:
-                image = cam_manager.get_image()
-                if image is not None:
-                    cv2.imshow(cam_manager._SN(), cv2.resize(image,(image.shape[1]//2,image.shape[0]//2)))
-            key = cv2.waitKey(1)
-            if key == ord('q'):
-                for cam_manager in camera_managers:
-                    cv2.imwrite(cam_manager._SN() + ".png", cam_manager.get_image())
-                break
-    finally:
-        for cam_manager in camera_managers:
-            cam_manager.stopcamera()
-        cv2.destroyAllWindows()
-        sys.exit(0)
+    cam = CameraManager()
+    ret = cam.startcamera_load()
+    time.sleep(1)
+    cam.camera_properties.calibrate()
+    #while True:
+    #    cam_manager = CameraManager()
+    #    ret = cam_manager.startcamera_load()
+    #    if ret:
+    #        camera_managers.append(cam_manager)
+    #    else:
+    #        break
+    #
+    #try:
+    #    while True:
+    #        for cam_manager in camera_managers:
+    #            image = cam_manager.get_image()
+    #            if image is not None:
+    #                cv2.imshow(cam_manager._SN(), cv2.resize(image,(image.shape[1]//2,image.shape[0]//2)))
+    #        key = cv2.waitKey(1)
+    #        if key == ord('q'):
+    #            for cam_manager in camera_managers:
+    #                cv2.imwrite(cam_manager._SN() + ".png", cam_manager.get_image())
+    #            break
+    #finally:
+    #    for cam_manager in camera_managers:
+    #        cam_manager.stopcamera()
+    #    cv2.destroyAllWindows()
+    #    sys.exit(0)
