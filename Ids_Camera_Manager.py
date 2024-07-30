@@ -15,13 +15,14 @@ class CameraManager:
     """
 
 
-    def __init__(self, camera_id=None):
+    def __init__(self, camera_id=None, setting_path="camera_settings"):
         """
         Initializes the CameraManager class.
 
         :param camera_id: Serial number of the camera to be managed. If None, the first available camera will be used.
         """
-        self.setting_path = "camera_settings"
+
+        self.setting_path = setting_path
 
         self.Msetting = False
         self.m_device = None
@@ -538,7 +539,7 @@ class CameraManager:
             },
             "FPS": self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Value(),
             "Gain": self.m_node_map_remote_device.FindNode("Gain").Value(),
-            "Exposure": self.m_node_map_remote_device.FindNode("ExposureTime").Value()/1e3
+            "Exposure": self.m_node_map_remote_device.FindNode("ExposureTime").Value() / 1e3
         }
 
         if not os.path.exists(self.setting_path):
@@ -547,8 +548,20 @@ class CameraManager:
         file_name = f"{self.ID}.json"
         file_path = os.path.join(self.setting_path, file_name)
 
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as json_file:
+                existing_settings = json.load(json_file)
+        else:
+            existing_settings = {}
+
+        # Update or add the settings
+        existing_settings["ROI"] = settings["ROI"]
+        existing_settings["FPS"] = settings["FPS"]
+        existing_settings["Gain"] = settings["Gain"]
+        existing_settings["Exposure"] = settings["Exposure"]
+
         with open(file_path, 'w') as json_file:
-            json.dump(settings, json_file, indent=4)
+            json.dump(existing_settings, json_file, indent=4)
 
         return True
 
@@ -674,21 +687,20 @@ class CameraManager:
         """
         return self.ID
 
-class CameraCalibration:
-    def __init__(self, camera):
+class CameraProperties:
+    def __init__(self, camera:CameraManager, setting_path="camera_settings"):
         self.camera = camera
-        self.parameters_path = "camera_parameters"
-        self.WR_path = "WorldReference"
+        self.setting_path = setting_path
         self.cmtx = None
         self.dist = None
-        if os.path.exists(os.path.join(self.parameters_path, f"{self.camera._SN()}.json")):
+        if os.path.exists(os.path.join(self.setting_path, f"{self.camera._SN()}.json")):
             self.load_calibration()
         self.patternSize = None
         self.squareSize = None
         self.rvec = None
         self.tvec = None
         self.P = None
-        if os.path.exists(os.path.join(self.WR_path, f"{self.camera._SN()}.json")):
+        if os.path.exists(os.path.join(self.setting_path, f"{self.camera._SN()}.json")):
             self.load_wr()
         
     def mean_corner_difference(corners_new, corners, threshold=50):
@@ -718,7 +730,7 @@ class CameraCalibration:
 
         return objp
     
-    def calibrate(self, patternSize, squareSize):
+    def calibrate(self, patternSize:tuple[int,int]=(3,6), squareSize=50.8):
         """
         Calibrates the camera using a chessboard pattern.
 
@@ -727,9 +739,9 @@ class CameraCalibration:
 
         :return: True if the camera is successfully calibrated, False otherwise.
         """
-
-        self.patternSize = patternSize
-        self.squareSize = squareSize
+        if self.patternSize is None or self.squareSize is None:
+            self.patternSize = patternSize
+            self.squareSize = squareSize
 
 
         chessboard_World = self.cheessboard_pattern_size()
@@ -747,13 +759,13 @@ class CameraCalibration:
 
         while valid_images_count < required_images:
             img = self.camera.get_image()
-            ret, corners = cv2.findChessboardCorners(img, patternSize, None)
+            ret, corners = cv2.findChessboardCorners(img, self.patternSize, None)
             if ret and self.mean_corner_difference(corners, imgpoints):
                 objpoints.append(chessboard_World)
                 corners_refined = cv2.cornerSubPix(img, corners, (11, 11), (-1, -1), term_criteria)
                 imgpoints.append(corners_refined)
 
-                cv2.drawChessboardCorners(img, patternSize, corners_refined, ret)
+                cv2.drawChessboardCorners(img, self.patternSize, corners_refined, ret)
 
                 valid_images_count += 1
 
@@ -776,9 +788,6 @@ class CameraCalibration:
         """
         Saves the camera calibration parameters to a JSON file.
 
-        :param cmtx: The camera matrix.
-        :param dist: The distortion coefficients.
-
         :return: True if the calibration parameters are successfully saved, False otherwise.
         """
         parameters = {
@@ -786,14 +795,26 @@ class CameraCalibration:
             "DistortionCoefficients": self.dist.tolist()
         }
 
-        if not os.path.exists(self.parameters_path):
-            os.makedirs(self.parameters_path)
+        if not os.path.exists(self.setting_path):
+            os.makedirs(self.setting_path)
 
         file_name = f"{self.camera._SN()}.json"
-        file_path = os.path.join(self.parameters_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
+
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as json_file:
+                existing_parameters = json.load(json_file)
+        else:
+            existing_parameters = {}
+
+        # Update or add the calibration parameters
+        existing_parameters["CameraMatrix"] = parameters["CameraMatrix"]
+        existing_parameters["DistortionCoefficients"] = parameters["DistortionCoefficients"]
 
         with open(file_path, 'w') as json_file:
-            json.dump(parameters, json_file, indent=4)
+            json.dump(existing_parameters, json_file, indent=4)
+
+        self.camera.save_settings()
 
         return True
     
@@ -804,7 +825,7 @@ class CameraCalibration:
         :return: True if the calibration parameters are successfully loaded, False otherwise.
         """
         file_name = f"{self.camera._SN()}.json"
-        file_path = os.path.join(self.parameters_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
 
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
@@ -826,46 +847,75 @@ class CameraCalibration:
 
         return True
     
-    def ReferenceFrame_acquisition(self, patternSize, squareSize):
-        
-        self.patternSize = patternSize
-        self.squareSize = squareSize
+    def ReferenceFrame_acquisition(self, patternSize:tuple[int,int]=(3,6), squareSize=50.8):
+        """
+        Acquires a reference frame using a chessboard pattern and saves the image to a file.
 
-        last_good = None
+        :param patternSize: The number of internal corners per chessboard row and column (default is (3, 6)).
+        :param squareSize: The size of each square on the chessboard in millimeters (default is 50.8).
 
-        while True:
-            img = self.camera.get_image()
-            ret, corners = cv2.findChessboardCorners(img, patternSize, None)
+        :return: The last successfully acquired image with detected chessboard corners, or None if no valid image was found.
+        """
+
+        if self.patternSize is None or self.squareSize is None:
+            self.patternSize = patternSize
+            self.squareSize = squareSize
+
+        self.last_good_reference = None
+        self.show = True
+        counter = 0
+        while self.show:
+            self.wr = self.camera.get_image()
+            ret, corners = cv2.findChessboardCorners(self.wr, self.patternSize, None)
             if ret:
-                last_good = img.copy()
-                cv2.drawChessboardCorners(img, patternSize, corners, ret)
-
-                valid_images_count += 1
-
-            cv2.imshow(self.ID, cv2.resize(img, (img.shape[1]//2, img.shape[0]//2)))
-            key = cv2.waitKey(1)
-            if key == 32:
-                break
-
-        cv2.destroyAllWindows()
-
-        cv2.imwrite(os.path.join(self.WR_path, f"{self.camera._SN()}.png"), last_good)
-
-        return last_good
+                counter = 0
+                self.last_good_reference = self.wr.copy()
+                self.wr = cv2.drawChessboardCorners(self.wr, self.patternSize, corners, ret)
+            counter += 1
+            if counter > 50:
+                counter = 0
+                self.last_good_reference = None
+        cv2.imwrite(os.path.join(self.setting_path, f"{self.camera._SN()}.png"), self.last_good_reference)
+        self.get_camera_position()
+        return self.last_good_reference
         
-    def get_camera_position(self, wr, patternSize, squareSize):
+    def get_camera_position(self, image_wr:str=None, patternSize:tuple[int,int]=(3,6), squareSize=50.8, offset_xyz:list[float]=None): 
         
-        self.patternSize = patternSize
-        self.squareSize = squareSize
 
-        #schacchiera mondo reale
-    
+        if self.patternSize is None or self.squareSize is None:
+            self.patternSize = patternSize
+            self.squareSize = squareSize
+
+        if offset_xyz is None:
+            offset_xyz = [1, (self.patternSize[1] - 1) / 2, 0] * self.squareSize
+        
+        if offset_xyz == [1, (patternSize[1] - 1) / 2, 0] * squareSize:
+            if offset_xyz[0] != self.squareSize:
+                offset_xyz = [1, (self.patternSize[1] - 1) / 2, 0] * self.squareSize
+
+        # Caricamento dell'immagine di riferimento
+        if image_wr is None:
+            if self.last_good_reference is None:
+                reference_image_path = os.path.join(self.setting_path, f"{self.camera._SN()}.png")
+                if not os.path.exists(reference_image_path):
+                    print("Reference frame not found.")
+                    return False
+                self.wr = cv2.imread(reference_image_path)
+            else:
+                self.wr = self.last_good_reference.copy()
+        else:
+            self.wr = cv2.imread(image_wr)
+            if self.wr is None:
+                print(f"Error loading image from {image_wr}")
+                return False
+
+        #schacchiera mondo reale    
         cRW = self.cheessboard_pattern_size() * [1,-1, 1]
-        cRW += [self.squareSize, 2*self.squareSize, 0]
+        cRW += offset_xyz
             
         # Trova gli angoli della scacchiera
         print('Detecting World Reference')
-        ret, corners = cv2.findChessboardCorners(wr, self.patternSize, None)
+        ret, corners = cv2.findChessboardCorners(self.wr, self.patternSize, None)
 
         if ret:
             # Risolvi il problema PnP per ottenere la posa della fotocamera
@@ -882,19 +932,17 @@ class CameraCalibration:
             print(self.rvec)
             print("\nTranslation Vector (tvec):")
             print(self.tvec)
-            points_3d = points_3d = np.array([[0, 0, 0],  # Punto 1
-                                                [1000, 0, 0],  # Punto 2
-                                                [0, 1000, 0],  # Punto 3
-                                                [0, 0, 1000]], dtype=np.float32) # Punto 4
+            points_3d = np.array([[0, 0, 0],  # Punto 1
+                                 [1000, 0, 0],  # Punto 2
+                                 [0, 1000, 0],  # Punto 3
+                                 [0, 0, 1000]], dtype=np.float32) # Punto 4
             points_2d, _ = cv2.projectPoints(points_3d, self.rvec, self.tvec, self.cmtx, self.dist)
 
             #img = cv2.drawChessboardCorners(img, pattern_size, corners, ret)
-            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[1][0], dtype =int), [255,0,0], 3)
-            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[2][0], dtype =int), [0,255,0], 3)
-            wr = cv2.line(wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[3][0], dtype =int), [0,0,255], 3)
+            self.wr = cv2.line(self.wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[1][0], dtype =int), [255,0,0], 3)
+            self.wr = cv2.line(self.wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[2][0], dtype =int), [0,255,0], 3)
+            self.wr = cv2.line(self.wr, np.array(points_2d[0][0],dtype=int), np.array(points_2d[3][0], dtype =int), [0,0,255], 3)
 
-            cv2.imshow('Chessboard Corners', cv2.resize(wr,(540,960)))
-            cv2.waitKey(2000)  # Display each image for a short time
             rotM = cv2.Rodrigues(self.rvec)[0]
             rotM = np.matrix(rotM).T
             
@@ -909,10 +957,11 @@ class CameraCalibration:
             self.save_wr()
 
 
-            return cameraPosition
+            return True
         else:
             print("Angoli della scacchiera non trovati.")
-            return None, None, None
+            return False
+        
     def save_wr(self):
         """
         Saves the World Reference to a JSON file.
@@ -920,19 +969,32 @@ class CameraCalibration:
         :return: True if the World Reference is successfully saved, False otherwise.
         """
         parameters = {
-            "rvec": self.rvec.tolist(),
-            "tvec": self.tvec.tolist(),
-            "P": self.P.tolist()
+            "RotationVector": self.rvec.tolist(),
+            "TranslationVector": self.tvec.tolist(),
+            "ProjectionMatrix": self.P.tolist()
         }
 
-        if not os.path.exists(self.WR_path):
-            os.makedirs(self.WR_path)
+        if not os.path.exists(self.setting_path):
+             os.makedirs(self.setting_path)
 
         file_name = f"{self.camera._SN()}.json"
-        file_path = os.path.join(self.WR_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
+
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as json_file:
+                existing_parameters = json.load(json_file)
+        else:
+            existing_parameters = {}
+
+        # Update or add the World Reference parameters
+        existing_parameters["RotationVector"] = parameters["RotationVector"]
+        existing_parameters["TranslationVector"] = parameters["TranslationVector"]
+        existing_parameters["ProjectionMatrix"] = parameters["ProjectionMatrix"]
 
         with open(file_path, 'w') as json_file:
-            json.dump(parameters, json_file, indent=4)
+            json.dump(existing_parameters, json_file, indent=4)
+
+        return True
     
     def load_wr(self):
         """
@@ -941,7 +1003,7 @@ class CameraCalibration:
         :return: True if the World Reference is successfully loaded, False otherwise.
         """
         file_name = f"{self.camera._SN()}.json"
-        file_path = os.path.join(self.WR_path, file_name)
+        file_path = os.path.join(self.setting_path, file_name)
 
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
@@ -952,9 +1014,9 @@ class CameraCalibration:
 
         try:
             # Convert lists to numpy arrays
-            self.rvec = np.array(parameters["rvec"])
-            self.tvec = np.array(parameters["tvec"])
-            self.P = np.array(parameters["P"])
+            self.rvec = np.array(parameters["RotationVector"])
+            self.tvec = np.array(parameters["TranslationVector"])
+            self.P = np.array(parameters["ProjectionMatrix"])
         except KeyError as e:
             print(f"Missing key in JSON file: {e}")
             return False
