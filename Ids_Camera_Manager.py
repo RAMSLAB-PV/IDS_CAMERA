@@ -3,7 +3,6 @@ import sys
 import cv2
 import json
 import time
-import pyceres
 import threading
 import numpy as np
 from tqdm import tqdm
@@ -33,12 +32,16 @@ class CameraManager:
         self.image = None
         self.acquisition_thread = None
         self.running = False
-        self.bgr = None
+        self.frame = None
         self.jpg = None
         self.ID = camera_id
         self.print = False
         self.camera_properties = CameraProperties(self)
+        self.pool_flag = False
 
+    def __copy__(self):
+        return CameraManager(self.ID, self.setting_path)
+    
     def open_camera(self):
         """
         Opens the camera with the specified ID. If no ID is provided, the first available camera is opened.
@@ -332,7 +335,6 @@ class CameraManager:
             self.running = True
             self.acquisition_thread = threading.Thread(target=self.runtime_frame, daemon=False)
             self.acquisition_thread.start()
-            time.sleep(2)
             return True
         except Exception as e:
             print(f"Error starting acquisition: {str(e)}")
@@ -343,16 +345,20 @@ class CameraManager:
         Continuously acquires and processes frames from the camera.
         """
         flag = False
+        print("Acquisition started for " + self.ID)
         while self.running:
-            buffer = self.m_dataStream.WaitForFinishedBuffer(100000)
+            buffer = self.m_dataStream.WaitForFinishedBuffer(100)
+
+            self.pool_flag = not self.pool_flag
+
             if not buffer.HasImage():
                 raise Exception("Buffer does not contain an image.")
             
             self.image = ipl.BufferToImage(buffer).get_numpy_2D()
             self.m_dataStream.QueueBuffer(buffer)
-            self.bgr = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
             if self.print:
-                cv2.imshow(self.ID, cv2.resize(self.bgr,(self.bgr.shape[1]//2,self.bgr.shape[0]//2)))
+                self.frame = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
+                cv2.imshow(self.ID, cv2.resize(self.frame,(self.frame.shape[1]//2,self.frame.shape[0]//2)))
                 cv2.waitKey(1)
                 flag = True
             else:
@@ -651,10 +657,10 @@ class CameraManager:
         
         if not self.alloc_and_announce_buffers():
             sys.exit(-7)
-        
+        time.sleep(5)
         if not self.start_acquisition():
             sys.exit(-8)
-
+        
         return True
     
     def stopcamera(self):
@@ -675,13 +681,40 @@ class CameraManager:
         peak.Library.Close()
 
 
-    def get_image(self):
+    def get_image(self, format="BGR"):
+        """
+        Returns the current image acquired from the camera.
+
+        :param format: The format of the image to return ("BGR" or "Mono8").
+
+        :return: The current image NOT POOL.
+        """
+        if format == "BGR":
+            self.frame = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
+            return self.frame
+        elif format == "Mono8":
+            return self.image
+        else:
+            print("Invalid format")
+            return None
+
+        
+    
+    def pool_frame(self, format="BGR"):
         """
         Returns the current image acquired from the camera.
 
         :return: The current image in BGR format.
         """
-        return self.bgr
+        if self.pool_flag:
+            while self.pool_flag:
+                pass
+            return self.get_image(format)
+        else:
+            while not self.pool_flag:
+                pass
+            return self.get_image(format)
+
     
     def _SN(self):
         """
@@ -766,7 +799,6 @@ class CameraProperties:
                 tempo = tempo_end-time.time()
                 if tempo <= 30:
                     frames.append(img.copy())
-                    print(f"Captured frame {len(frames)}")
                     img = cv2.flip(img, 1)
                     img = cv2.putText(img, f"Capturing for {tempo:.0f} seconds", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 else:
@@ -782,10 +814,6 @@ class CameraProperties:
             if key == 32:
                 tempo_end = time.time()+35
                 capturing = True
-        for frame in frames:
-            cv2.imshow(self.camera._SN(), cv2.resize(frame, (frame.shape[1]//2, frame.shape[0]//2)))
-            cv2.waitKey(1)
-        cv2.destroyAllWindows()
 
         frames = np.array(frames)
 
@@ -801,18 +829,18 @@ class CameraProperties:
         print(f"Founded {valid_images_count} valid images")
 
         imgpoints = np.array(imgpoints).squeeze()
-        num_batches = valid_images_count//50
+        num_batches = valid_images_count//30
         batches = []
-        objpoints = np.zeros((50,18,3))
-        objpoints[:] = chessboard_World
+        objpoints = [chessboard_World.copy() for i in range(50)]
         # Creare i batch
         cmtxs = []
         dists = []
-        for _ in tqdm(num_batches, desc="Calibration"):
+        for _ in tqdm(range(4*num_batches), desc="Calibration"):
             # Selezionare 50 indici casuali lungo l'asse 0
             indices = np.random.choice(imgpoints.shape[0], 50, replace=False)
             # Creare il batch selezionando gli indici dal tuo array
             batch = imgpoints[indices]
+            batch_list = [batch[i] for i in range(imgpoints[indices].shape[0])]
             
             rpj_error, cmtx_temp, dist_temp, _ , _ = cv2.calibrateCamera(objpoints, batch, img.shape[::-1], None, None)
             cmtxs.append(cmtx_temp)
@@ -854,14 +882,15 @@ class CameraProperties:
                 projected_points, _ = cv2.projectPoints(B_remaining, rvec, tvec, self.cmtx, self.dist)
 
                 # Calcolare l'errore di riproiezione
-                error = cv2.norm(A_remaining, projected_points, cv2.NORM_L2) / len(A_remaining)
-                reprojection_errors.append(error)
+                error = np.linalg.norm(A_remaining- projected_points.squeeze(),axis=1)
+                reprojection_errors.append(np.mean(error))
 
         # Calcolare la media degli errori di riproiezione
         mean_reprojection_error = np.mean(reprojection_errors)
-        print(f"Mean reprojection error: {mean_reprojection_error}")
-        print(f"Camera matrix:\n{self.cmtx}")
-        
+
+        self.save_calibration()
+
+
     def save_calibration(self):
         """
         Saves the camera calibration parameters to a JSON file.
@@ -1146,120 +1175,7 @@ class CameraProperties:
         self.show = False
         return True
 
-cost = pyceres.CostFunction()
-cost.set_parameter_block_sizes
 
-
-class ReprojectionCostFunction(pyceres.CostFunction):
-    def __init__(self):
-        super().__init__()
-        self.set_num_residuals(18)
-        self.set_parameter_block_sizes([1, 1, 1, 1, 1, 1, (1,3), (1,3)])
-        #self.observed = np.array(observed)
-        #self.world_point = np.array(world_point)
-
-    def Evaluate(self, parameters, residuals, jacobians):
-        self.observed = np.array([[1027.9907 ,  794.9041 ],
-       [1027.2947 ,  703.91406],
-       [1026.497  ,  612.5368 ],
-       [1118.2146 ,  796.8792 ],
-       [1117.9833 ,  704.3839 ],
-       [1116.9982 ,  611.0883 ],
-       [1210.026  ,  798.0821 ],
-       [1210.4116 ,  704.53754],
-       [1209.9893 ,  610.0088 ],
-       [1303.1099 ,  798.3448 ],
-       [1304.1499 ,  704.11066],
-       [1303.1763 ,  608.7239 ],
-       [1396.6923 ,  798.1369 ],
-       [1397.5958 ,  703.3377 ],
-       [1396.9244 ,  607.9472 ],
-       [1489.0524 ,  797.2684 ],
-       [1490.789  ,  702.0262 ],
-       [1490.0833 ,  606.24005]])
-        
-        self.world_point = np.array([[  0. ,   0. ,   0. ],
-       [ 50.8,   0. ,   0. ],
-       [101.6,   0. ,   0. ],
-       [  0. ,  50.8,   0. ],
-       [ 50.8,  50.8,   0. ],
-       [101.6,  50.8,   0. ],
-       [  0. , 101.6,   0. ],
-       [ 50.8, 101.6,   0. ],
-       [101.6, 101.6,   0. ],
-       [  0. , 152.4,   0. ],
-       [ 50.8, 152.4,   0. ],
-       [101.6, 152.4,   0. ],
-       [  0. , 203.2,   0. ],
-       [ 50.8, 203.2,   0. ],
-       [101.6, 203.2,   0. ],
-       [  0. , 254. ,   0. ],
-       [ 50.8, 254. ,   0. ],
-       [101.6, 254. ,   0. ]])
-        
-        fx, fy, cx, cy, k1, k2, rvec, tvec = parameters
-        R, _ = cv2.Rodrigues(rvec)
-        
-        print(fx, fy, cx, cy, k1, k2, rvec, tvec)
-
-        # Compute projected 3D points
-        projected_points = np.dot(self.world_point, R.T) + tvec
-        X, Y, Z = projected_points[:, 0], projected_points[:, 1], projected_points[:, 2]
-
-        x = fx * (X / Z) + cx
-        y = fy * (Y / Z) + cy
-        
-        # Compute distortion
-        r2 = x**2 + y**2
-        x_distorted = x * (1 + k1 * r2 + k2 * r2**2)
-        y_distorted = y * (1 + k1 * r2 + k2 * r2**2)
-        
-        # Compute residuals
-        ox, oy = self.observed[:, 0], self.observed[:, 1]
-        residuals[:] = (ox - x_distorted)**2 + (oy - y_distorted)**2
-
-        if jacobians is not None:
-            jacobians[0].fill(0)  # Initialize Jacobians array
-            
-            # Compute Jacobians w.r.t. intrinsic parameters
-            jacobian_intrinsic = np.zeros((self.num_points, 6))
-            jacobian_intrinsic[:, 0] = -2 * (ox - x_distorted) * (X / Z)  # df/dfx
-            jacobian_intrinsic[:, 1] = -2 * (oy - y_distorted) * (Y / Z)  # df/dfy
-            jacobian_intrinsic[:, 2] = -2 * (ox - x_distorted) * (1 + k1 * r2 + k2 * r2**2)  # df/dcx
-            jacobian_intrinsic[:, 3] = -2 * (oy - y_distorted) * (1 + k1 * r2 + k2 * r2**2)  # df/dcy
-            jacobian_intrinsic[:, 4] = -2 * (ox - x_distorted) * (r2)  # df/dk1
-            jacobian_intrinsic[:, 5] = -2 * (oy - y_distorted) * (r2**2)  # df/dk2
-
-            # Jacobians w.r.t. rotation vector
-            jacobian_rvec = np.zeros((self.num_points, 3))
-            perturb = 1e-6
-            for j in range(3):
-                rvec_perturb = np.copy(rvec)
-                rvec_perturb[j] += perturb
-                R_perturb, _ = cv2.Rodrigues(rvec_perturb)
-                projected_points_perturb = np.dot(self.world_point, R_perturb.T) + tvec
-                X_perturb, Y_perturb, Z_perturb = projected_points_perturb[:, 0], projected_points_perturb[:, 1], projected_points_perturb[:, 2]
-                x_perturb = fx * (X_perturb / Z_perturb) + cx
-                y_perturb = fy * (Y_perturb / Z_perturb) + cy
-                r2_perturb = x_perturb**2 + y_perturb**2
-                x_distorted_perturb = x_perturb * (1 + k1 * r2_perturb + k2 * r2_perturb**2)
-                y_distorted_perturb = y_perturb * (1 + k1 * r2_perturb + k2 * r2_perturb**2)
-                jacobian_rvec[:, j] = (x_distorted_perturb - x_distorted) / perturb
-
-            # Jacobians w.r.t. translation vector
-            jacobian_tvec = np.zeros((self.num_points, 3))
-            jacobian_tvec[:, 0] = -2 * (ox - x_distorted) * (fx / Z)  # df/dtx
-            jacobian_tvec[:, 1] = -2 * (oy - y_distorted) * (fy / Z)  # df/dty
-            jacobian_tvec[:, 2] = 0  # df/dtz
-
-            # Fill in Jacobians
-            jacobians[0][:6] = np.mean(jacobian_intrinsic, axis=0)  # Average over all points
-            jacobians[0][6:9] = np.mean(jacobian_rvec, axis=0)  # Average over all points
-            jacobians[0][9:] = np.mean(jacobian_tvec, axis=0)  # Average over all points
-
-        return True
-
-#EXAMPLE OF USE
 if __name__ == '__main__':
 
 
@@ -1272,10 +1188,36 @@ if __name__ == '__main__':
             camera_managers.append(cam_manager)
         else:
             break'''
-    cam = CameraManager()
-    ret = cam.startcamera_load()
-    time.sleep(1)
-    cam.camera_properties.calibrate()
+    
+    """prova record video"""
+
+    cam_manager = CameraManager()
+    ret = cam_manager.startcamera_load()
+
+    video = cv2.VideoWriter('video.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30, (cam_manager.pool_frame().shape[1], cam_manager.pool_frame().shape[0]))
+    tempo = time.time()
+
+    while time.time()-tempo < 10:
+        image = cam_manager.get_image()
+        print(time.time()-tempo)
+        if image is not None:
+            video.write(image)
+
+    
+    video.release()
+    cam_manager.stopcamera()
+    cv2.destroyAllWindows()
+    sys.exit(0)
+
+
+    """prova calibrazione"""
+    #cam = CameraManager()
+    #ret = cam.startcamera_load()
+    #time.sleep(1)
+    #cam.camera_properties.calibrate()
+    
+    
+    """prova varia"""
     #while True:
     #    cam_manager = CameraManager()
     #    ret = cam_manager.startcamera_load()
