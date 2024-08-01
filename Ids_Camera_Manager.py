@@ -38,6 +38,7 @@ class CameraManager:
         self.print = False
         self.camera_properties = CameraProperties(self)
         self.pool_flag = False
+        self.fps = None
 
     def __copy__(self):
         return CameraManager(self.ID, self.setting_path)
@@ -224,23 +225,26 @@ class CameraManager:
         :param fps: The FPS to set. If None, the maximum FPS is used.
         :return: True if the FPS is successfully set, False otherwise.
         """
+        if fps is not None:
+            self.fps = fps
+
         try:
             max_fps = self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Maximum()
             min_fps = self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Minimum()
 
-            if fps is None:
-                fps = max_fps
+            if self.fps is None:
+                self.fps = max_fps
 
-            if 1e6/self.m_node_map_remote_device.FindNode("ExposureTime").Value() < fps:
+            if 1e6/self.m_node_map_remote_device.FindNode("ExposureTime").Value() < self.fps:
                 self.m_node_map_remote_device.FindNode("ExposureAuto").SetCurrentEntry("Continuous")
 
             max_fps = self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Maximum()
             min_fps = self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Minimum()
 
-            if (fps > max_fps) or (fps < min_fps):
+            if (self.fps > max_fps) or (self.fps < min_fps):
                 return False
-            self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").SetValue(fps)
-            print("FPS of " + self.m_device.SerialNumber() +" set to: " + str(fps))
+            self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").SetValue(self.fps)
+            print("FPS of " + self.m_device.SerialNumber() +" set to: " + str(self.fps))
             
             return True
         except Exception as e:
@@ -463,12 +467,12 @@ class CameraManager:
                     print("FPS: ")
                     value = input()
                     if value:
-                        fps = float(value)
+                        self.fps = float(value)
                     else:
                         print("invalid FPS")
                         pass
 
-                    if not self.set_fps(fps):
+                    if not self.set_fps(self.fps):
                         print("Invalid FPS")
                         pass
                     else:
@@ -518,6 +522,7 @@ class CameraManager:
         print("Gain: " + str(self.m_node_map_remote_device.FindNode("Gain").Value()))
         print("Exposure: " + str(self.m_node_map_remote_device.FindNode("ExposureTime").Value()/1e3))
         self.m_node_map_remote_device.FindNode("TLParamsLocked").SetValue(1)
+        self.fps = self.m_node_map_remote_device.FindNode("AcquisitionFrameRate").Value()
 
         while True:
             save = input("Do you want to save the settings? (y/n): ")
@@ -681,18 +686,21 @@ class CameraManager:
         peak.Library.Close()
 
 
-    def get_image(self, format="BGR"):
+    def get_image(self, format:str=None):
         """
         Returns the current image acquired from the camera.
 
-        :param format: The format of the image to return ("BGR" or "Mono8").
+        :param format: The format of the image to return (predef. --> "BGR" or "Mono8").
 
         :return: The current image NOT POOL.
         """
-        if format == "BGR":
+        if format is not None:
+            self.format = format
+
+        if self.format == "BGR":
             self.frame = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
             return self.frame
-        elif format == "Mono8":
+        elif self.format == "Mono8":
             return self.image
         else:
             print("Invalid format")
@@ -700,20 +708,27 @@ class CameraManager:
 
         
     
-    def pool_frame(self, format="BGR"):
+    def pool_frame(self, format:str=None):
         """
-        Returns the current image acquired from the camera.
+        Return a new image when it occur.
 
-        :return: The current image in BGR format.
+        :param format: The format of the image to return (predef. --> "BGR" or "Mono8").
+
+        :return: The poolled image.
         """
+
+        if format is not None:
+            self.format = format
+        
+
         if self.pool_flag:
             while self.pool_flag:
                 pass
-            return self.get_image(format)
+            return self.get_image()
         else:
             while not self.pool_flag:
                 pass
-            return self.get_image(format)
+            return self.get_image()
 
     
     def _SN(self):
@@ -817,7 +832,7 @@ class CameraProperties:
 
         frames = np.array(frames)
 
-        for frame in tqdm(frames, desc="Elaborazione dei frame"):
+        for frame in tqdm(frames, desc="Frame Analysis"):
             ret, corners = cv2.findChessboardCorners(cv2.cvtColor(frame,cv2.COLOR_GRAY2BGR), self.patternSize, None)
             if ret:
                 frame = cv2.drawChessboardCorners(frame, self.patternSize, corners, ret)
@@ -850,7 +865,7 @@ class CameraProperties:
         self.cmtx = np.mean(cmtxs, axis=0)
         self.dist = np.mean(dists, axis=0)
 
-        num_tests = 100
+        num_tests = 50
 
         # Lista per memorizzare gli errori di riproiezione
         reprojection_errors = []
@@ -887,8 +902,16 @@ class CameraProperties:
 
         # Calcolare la media degli errori di riproiezione
         mean_reprojection_error = np.mean(reprojection_errors)
-
-        self.save_calibration()
+        if mean_reprojection_error > 1:
+            print(f"Mean reprojection error: {mean_reprojection_error:.2f} pixels")
+            print("Calibration failed.")
+            key = input("Do you want to try again? (y/n): ")
+            if key.upper() == "Y":
+                self.calibrate()
+        else:
+            print(f"Mean reprojection error: {mean_reprojection_error:.2f} pixels")
+            print("Calibration successful.")
+            self.save_calibration()
 
 
     def save_calibration(self):
@@ -1175,6 +1198,88 @@ class CameraProperties:
         self.show = False
         return True
 
+class CameraFunction:
+    
+    def __init__(self, camera:CameraManager):
+        self.camera = camera
+        self.video = None
+        self.Thread_video_record = None
+        self.stop_record = False
+        self.duration = None
+
+    def create_video(self, base_name:str=None, colormode:str='BGR'):
+        """
+        Records a video from the camera and saves it to a file.
+
+        :param base_name: The base name of the video file.
+        :param colormode: The colormode of the video file (predef-->"BGR" or "MONO8").
+        :return: True if the video is successfully recorded, False otherwise.
+        """
+        if base_name is not None:
+            video_name = base_name
+        else:
+            video_name = self.camera._SN()
+        extension = ".mp4"
+        video_name = base_name + extension if base_name else video_name + extension
+        counter = 0
+
+        while os.path.exists(video_name):
+            counter += 1
+            video_name = f"{base_name}_{counter}{extension}"
+
+        isColor = (colormode == 'BGR')
+        self.video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), self.camera.fps, 
+                                     (self.camera.pool_frame().shape[1], self.camera.pool_frame().shape[0]), isColor=isColor)
+
+        return True
+    
+    def start_video(self, duration:int=None):
+        """
+        Starts recording a video from the camera.
+
+        :param duration: The duration of the video in seconds.
+        :return: True if the video is successfully started, False otherwise.
+        """
+        if duration is not None:
+            self.duration = duration
+
+        if self.video is None:
+            print("Video not created.")
+            return False
+
+        self.stop_record = False
+        self.Thread_video_record = threading.Thread(target=self.record_video)
+        self.Thread_video_record.start()
+
+        return True
+    
+    def record_video(self):
+        """
+        Records a video from the camera.
+
+        :return: True if the video is successfully recorded, False otherwise.
+        """
+        start_time = time.time()
+        while not self.stop_record:
+            self.video.write(self.camera.pool_frame())
+            if time.time() - start_time >= self.duration:
+                break
+
+        self.video.release()
+        return True
+
+    def stop_video(self):
+        """
+        Stops recording a video from the camera.
+
+        :return: True if the video is successfully stopped, False otherwise.
+        """
+        self.stop_record = True
+        if self.Thread_video_record is not None:
+            self.Thread_video_record.join()
+
+        return True
+    
 
 if __name__ == '__main__':
 

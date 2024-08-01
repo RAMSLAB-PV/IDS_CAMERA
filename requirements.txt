@@ -3,3 +3,4 @@ ids_peak
 simplejson
 threaded
 numpy
+tqdm
