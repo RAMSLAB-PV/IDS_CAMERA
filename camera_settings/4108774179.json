@@ -2,10 +2,10 @@
     "ROI": {
         "OffsetX": 0,
         "OffsetY": 0,
-        "Width": 1264,
+        "Width": 1984,
         "Height": 1264
     },
-    "FPS": 29.99843758137597,
+    "FPS": 60,
     "Gain": 1.0,
-    "Exposure": 1.000361111111111
+    "Exposure": 1.626861111111111
 }

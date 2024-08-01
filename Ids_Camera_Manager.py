@@ -37,8 +37,10 @@ class CameraManager:
         self.ID = camera_id
         self.print = False
         self.camera_properties = CameraProperties(self)
-        self.pool_flag = False
+        self.function = CameraFunction(self)
+        self.frame_flag = False
         self.fps = None
+        self.colorMode = "BGR"
 
     def __copy__(self):
         return CameraManager(self.ID, self.setting_path)
@@ -353,12 +355,11 @@ class CameraManager:
         while self.running:
             buffer = self.m_dataStream.WaitForFinishedBuffer(100)
 
-            self.pool_flag = not self.pool_flag
-
             if not buffer.HasImage():
                 raise Exception("Buffer does not contain an image.")
             
             self.image = ipl.BufferToImage(buffer).get_numpy_2D()
+            self.frame_flag = True
             self.m_dataStream.QueueBuffer(buffer)
             if self.print:
                 self.frame = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
@@ -686,49 +687,44 @@ class CameraManager:
         peak.Library.Close()
 
 
-    def get_image(self, format:str=None):
+    def get_image(self, colorMode:str=None):
         """
         Returns the current image acquired from the camera.
 
-        :param format: The format of the image to return (predef. --> "BGR" or "Mono8").
+        :param colorMode: The colorMode of the image to return (predef. --> "BGR" or "Mono8").
 
         :return: The current image NOT POOL.
         """
-        if format is not None:
-            self.format = format
+        if colorMode is not None:
+            self.colorMode = colorMode
 
-        if self.format == "BGR":
+        if self.colorMode == "BGR":
             self.frame = cv2.cvtColor(self.image, cv2.COLOR_GRAY2BGR)
             return self.frame
-        elif self.format == "Mono8":
+        elif self.colorMode == "Mono8":
             return self.image
         else:
-            print("Invalid format")
+            print("Invalid colorMode")
             return None
 
         
     
-    def pool_frame(self, format:str=None):
+    def wait4frame(self, colorMode:str=None):
         """
         Return a new image when it occur.
 
-        :param format: The format of the image to return (predef. --> "BGR" or "Mono8").
+        :param colorMode: The colorMode of the image to return (predef. --> "BGR" or "Mono8").
 
         :return: The poolled image.
         """
+        if colorMode is not None:
+            self.colorMode = colorMode
 
-        if format is not None:
-            self.format = format
-        
+        while not self.frame_flag:
+            time.sleep(0.001)
 
-        if self.pool_flag:
-            while self.pool_flag:
-                pass
-            return self.get_image()
-        else:
-            while not self.pool_flag:
-                pass
-            return self.get_image()
+        self.frame_flag = False
+        return self.get_image()
 
     
     def _SN(self):
@@ -1202,12 +1198,19 @@ class CameraFunction:
     
     def __init__(self, camera:CameraManager):
         self.camera = camera
+        self.VideoRecorder = VideoRecorder(self)
+
+class VideoRecorder:
+
+    def __init__(self, function:CameraFunction):
+        self.camera = function.camera
         self.video = None
         self.Thread_video_record = None
         self.stop_record = False
         self.duration = None
 
-    def create_video(self, base_name:str=None, colormode:str='BGR'):
+
+    def create(self, base_name:str=None, colormode:str='BGR'):
         """
         Records a video from the camera and saves it to a file.
 
@@ -1219,7 +1222,7 @@ class CameraFunction:
             video_name = base_name
         else:
             video_name = self.camera._SN()
-        extension = ".mp4"
+        extension = ".avi"
         video_name = base_name + extension if base_name else video_name + extension
         counter = 0
 
@@ -1228,12 +1231,12 @@ class CameraFunction:
             video_name = f"{base_name}_{counter}{extension}"
 
         isColor = (colormode == 'BGR')
-        self.video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), self.camera.fps, 
-                                     (self.camera.pool_frame().shape[1], self.camera.pool_frame().shape[0]), isColor=isColor)
+        self.video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'MJPG'), self.camera.fps, 
+                                     (self.camera.wait4frame().shape[1], self.camera.wait4frame().shape[0]), isColor=isColor)
 
         return True
     
-    def start_video(self, duration:int=None):
+    def start(self, duration:int=None):
         """
         Starts recording a video from the camera.
 
@@ -1248,27 +1251,31 @@ class CameraFunction:
             return False
 
         self.stop_record = False
-        self.Thread_video_record = threading.Thread(target=self.record_video)
+        self.Thread_video_record = threading.Thread(target=self.record)
         self.Thread_video_record.start()
-
+        
         return True
     
-    def record_video(self):
+    def record(self):
         """
         Records a video from the camera.
 
         :return: True if the video is successfully recorded, False otherwise.
         """
         start_time = time.time()
+        print("Recording started.")
+        counter = 0
         while not self.stop_record:
-            self.video.write(self.camera.pool_frame())
+            self.video.write(self.camera.wait4frame())
+            counter += 1
             if time.time() - start_time >= self.duration:
                 break
-
+        print(f"Recorded {counter} frames.")
+        print("Recording stopped.")
         self.video.release()
         return True
 
-    def stop_video(self):
+    def stop(self):
         """
         Stops recording a video from the camera.
 
@@ -1284,7 +1291,7 @@ class CameraFunction:
 if __name__ == '__main__':
 
 
-    camera_managers = []
+    camera_managers: list[CameraManager] = []
     '''ids = ["4108774181"]
     for id in ids:
         cam_manager = CameraManager(id)
@@ -1295,24 +1302,40 @@ if __name__ == '__main__':
             break'''
     
     """prova record video"""
+    i = 0
+    while True:
+        cam_manager = CameraManager()
 
-    cam_manager = CameraManager()
-    ret = cam_manager.startcamera_load()
-
-    video = cv2.VideoWriter('video.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30, (cam_manager.pool_frame().shape[1], cam_manager.pool_frame().shape[0]))
-    tempo = time.time()
-
-    while time.time()-tempo < 10:
-        image = cam_manager.get_image()
-        print(time.time()-tempo)
-        if image is not None:
-            video.write(image)
-
+        camera_managers.append(cam_manager.__copy__())
+        ret = camera_managers[i].startcamera_load()
+        i += 1
+        if not ret:
+            camera_managers = camera_managers[:-1]
+            break
     
-    video.release()
-    cam_manager.stopcamera()
+    for i in range(len(camera_managers)):
+        camera_managers[i].function.VideoRecorder.create()
+
+    for cam in camera_managers:
+        cam.function.VideoRecorder.start(10)
+    
+    time.sleep(10)
+    for cam in camera_managers:
+        cam.stopcamera()
+    
     cv2.destroyAllWindows()
     sys.exit(0)
+
+
+
+    #cam_manager = CameraManager()
+    #ret = cam_manager.startcamera_manual()
+    #cam_manager.function.VideoRecorder.create("prova")
+    #cam_manager.function.VideoRecorder.start(10)
+    #time.sleep(10)
+    #cam_manager.stopcamera()
+    #cv2.destroyAllWindows()
+    #sys.exit(0)
 
 
     """prova calibrazione"""
