@@ -1301,30 +1301,48 @@ if __name__ == '__main__':
         else:
             break'''
     
-    """prova record video"""
-    i = 0
-    while True:
-        cam_manager = CameraManager()
+    #cam = CameraManager()
+    #ret = cam.startcamera_load()
+    #cam.stopcamera()
+    #cam.function.VideoRecorder.create("prova")
+    #cam.function.VideoRecorder.start(10)
+    #time.sleep(10)
 
-        camera_managers.append(cam_manager.__copy__())
-        ret = camera_managers[i].startcamera_load()
-        i += 1
-        if not ret:
-            camera_managers = camera_managers[:-1]
-            break
+    #cam = CameraManager()
+    #cam.startcamera_auto()
+    #cam.stopcamera()
     
-    for i in range(len(camera_managers)):
-        camera_managers[i].function.VideoRecorder.create()
 
-    for cam in camera_managers:
-        cam.function.VideoRecorder.start(10)
-    
-    time.sleep(10)
-    for cam in camera_managers:
-        cam.stopcamera()
-    
-    cv2.destroyAllWindows()
-    sys.exit(0)
+
+
+
+    try:
+        """prova record video"""
+        prova = ["provaA", "provaB", "provaC"]
+
+        i = 0
+        while True:
+            cam_manager = CameraManager()
+
+            camera_managers.append(cam_manager.__copy__())
+            ret = camera_managers[i].startcamera_load()
+            i += 1
+            if not ret:
+                camera_managers = camera_managers[:-1]
+                break
+        
+        for i in range(len(camera_managers)):
+            camera_managers[i].function.VideoRecorder.create(prova[i])
+
+        for cam in camera_managers:
+            cam.function.VideoRecorder.start(10)
+        
+        time.sleep(10)
+    finally:    
+        for cam in camera_managers:
+            cam.stopcamera()
+
+        sys.exit(0)
 
 
 
