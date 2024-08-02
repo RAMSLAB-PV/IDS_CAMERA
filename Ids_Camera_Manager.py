@@ -23,24 +23,25 @@ class CameraManager:
         :param camera_id: Serial number of the camera to be managed. If None, the first available camera will be used.
         """
 
+        self.colorMode = "BGR"
         self.setting_path = setting_path
-
+        self.ID = camera_id
         self.Msetting = False
+        self.print = False
+        self.frame_flag = False
+        self.running = False
+
+        self.Properties = CameraProperties(self)
+        self.Function = CameraFunction(self)
+
         self.m_device = None
         self.m_dataStream = None
         self.m_node_map_remote_device = None
         self.image = None
         self.acquisition_thread = None
-        self.running = False
         self.frame = None
         self.jpg = None
-        self.ID = camera_id
-        self.print = False
-        self.camera_properties = CameraProperties(self)
-        self.function = CameraFunction(self)
-        self.frame_flag = False
         self.fps = None
-        self.colorMode = "BGR"
 
     def __copy__(self):
         return CameraManager(self.ID, self.setting_path)
@@ -618,13 +619,23 @@ class CameraManager:
         with open(file_path, 'r') as json_file:
             settings = json.load(json_file)
 
+        while self.frame_flag:
+            time.sleep(0.01)
+
         self.set_width(settings["ROI"]["Width"])
+        time.sleep(1)
         self.set_height(settings["ROI"]["Height"])
+        time.sleep(1)
         self.set_offset_x(settings["ROI"]["OffsetX"])
+        time.sleep(1)
         self.set_offset_y(settings["ROI"]["OffsetY"])
+        time.sleep(1)
         self.set_fps(settings["FPS"])
+        time.sleep(1)
         self.set_Gain(GainMode="Off", Gain=settings["Gain"])
+        time.sleep(1)
         self.set_Exposure(ExposureMode="Off", ExposureTime=settings["Exposure"])
+        time.sleep(1)
 
         print("Loaded settings from file: " + file_name)
         print("ROI: X OFFSET: " + str(settings["ROI"]["OffsetX"]) + ", Y OFFSET: " + str(settings["ROI"]["OffsetY"]) + ", WIDTH: " + str(settings["ROI"]["Width"]) + ", HEIGHT: " + str(settings["ROI"]["Height"]))
@@ -663,6 +674,7 @@ class CameraManager:
         
         if not self.alloc_and_announce_buffers():
             sys.exit(-7)
+
         time.sleep(5)
         if not self.start_acquisition():
             sys.exit(-8)
@@ -1287,6 +1299,30 @@ class VideoRecorder:
 
         return True
     
+class SafetyArucoCheck:
+
+    def __init__(self, camera:CameraManager, ArucoDictionary=cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)):
+
+        self.camera = camera
+        self.aruco_dict = ArucoDictionary
+        self.old_pose = None
+    
+    def check(self):
+        # Convert frame to grayscale
+        gray = cv2.cvtColor(self.camera.wait4frame(), cv2.COLOR_BGR2GRAY)
+
+        # Detect Aruco markers
+        corners, ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict)
+
+        # Check if any Aruco markers are found
+        if ids is not None:
+            # Iterate over detected markers
+            for i in range(len(ids)):
+                # Get the position of the marker
+                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i], 0.05, self.camera.cmtx, self.camera.dist)
+
+                # Save the position of the marker
+                self.old_pose
 
 if __name__ == '__main__':
 
@@ -1312,9 +1348,6 @@ if __name__ == '__main__':
     #cam.startcamera_auto()
     #cam.stopcamera()
     
-
-
-
 
     try:
         """prova record video"""
